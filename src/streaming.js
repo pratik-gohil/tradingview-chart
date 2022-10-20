@@ -1,128 +1,115 @@
-import { parseFullSymbol } from './helpers.js';
+import { subscribeInstruments, unsubscribeInstruments } from "./helpers.js";
 
-const socket = io('wss://streamer.cryptocompare.com');
+let paramString = window.location.href.split("?")[1];
+let queryString = new URLSearchParams(paramString);
+const token = queryString.get("token");
+
+const socket = io("https://devtrade.lkp.net.in", {
+  path: "/marketdata/socket.io",
+  query: {
+    token: token,
+    userID: "TEST03",
+    publishFormat: "JSON",
+    broadcastMode: "Full",
+  },
+  transports: ["websocket"],
+});
+
 const channelToSubscription = new Map();
 
-socket.on('connect', () => {
-	console.log('[socket] Connected');
-});
+const Segments = {
+  NSE: 1,
+  NSECM: 1,
+  NSEFO: 2,
+  NSECD: 3,
+  BSE: 11,
+  BSECM: 11,
+  BSEFO: 12,
+  MCXFO: 51,
+};
 
-socket.on('disconnect', (reason) => {
-	console.log('[socket] Disconnected:', reason);
-});
-
-socket.on('error', (error) => {
-	console.log('[socket] Error:', error);
-});
-
-socket.on('m', data => {
-	console.log('[socket] Message:', data);
-	const [
-		eventTypeStr,
-		exchange,
-		fromSymbol,
-		toSymbol,
-		,
-		,
-		tradeTimeStr,
-		,
-		tradePriceStr,
-	] = data.split('~');
-
-	if (parseInt(eventTypeStr) !== 0) {
-		// skip all non-TRADE events
-		return;
-	}
-	const tradePrice = parseFloat(tradePriceStr);
-	const tradeTime = parseInt(tradeTimeStr);
-	const channelString = `0~${exchange}~${fromSymbol}~${toSymbol}`;
-	const subscriptionItem = channelToSubscription.get(channelString);
-	if (subscriptionItem === undefined) {
-		return;
-	}
-	const lastDailyBar = subscriptionItem.lastDailyBar;
-	const nextDailyBarTime = getNextDailyBarTime(lastDailyBar.time);
-
-	let bar;
-	if (tradeTime >= nextDailyBarTime) {
-		bar = {
-			time: nextDailyBarTime,
-			open: tradePrice,
-			high: tradePrice,
-			low: tradePrice,
-			close: tradePrice,
-		};
-		console.log('[socket] Generate new bar', bar);
-	} else {
-		bar = {
-			...lastDailyBar,
-			high: Math.max(lastDailyBar.high, tradePrice),
-			low: Math.min(lastDailyBar.low, tradePrice),
-			close: tradePrice,
-		};
-		console.log('[socket] Update the latest bar by price', tradePrice);
-	}
-	subscriptionItem.lastDailyBar = bar;
-
-	// send data to every subscriber of that symbol
-	subscriptionItem.handlers.forEach(handler => handler.callback(bar));
-});
-
-function getNextDailyBarTime(barTime) {
-	const date = new Date(barTime * 1000);
-	date.setDate(date.getDate() + 1);
-	return date.getTime() / 1000;
-}
-
-export function subscribeOnStream(
-	symbolInfo,
-	resolution,
-	onRealtimeCallback,
-	subscribeUID,
-	onResetCacheNeededCallback,
-	lastDailyBar,
+export async function subscribeBars(
+  symbolInfo,
+  resolution,
+  updateCb,
+  uid,
+  resetCache,
+  lastDailyBar
 ) {
-	const parsedSymbol = parseFullSymbol(symbolInfo.full_name);
-	const channelString = `0~${parsedSymbol.exchange}~${parsedSymbol.fromSymbol}~${parsedSymbol.toSymbol}`;
-	const handler = {
-		id: subscribeUID,
-		callback: onRealtimeCallback,
-	};
-	let subscriptionItem = channelToSubscription.get(channelString);
-	if (subscriptionItem) {
-		// already subscribed to the channel, use the existing subscription
-		subscriptionItem.handlers.push(handler);
-		return;
-	}
-	subscriptionItem = {
-		subscribeUID,
-		resolution,
-		lastDailyBar,
-		handlers: [handler],
-	};
-	channelToSubscription.set(channelString, subscriptionItem);
-	console.log('[subscribeBars]: Subscribe to streaming. Channel:', channelString);
-	socket.emit('SubAdd', { subs: [channelString] });
+  const channelString = `${symbolInfo.exchange}-${symbolInfo.exchangeInstrumentID}`;
+  const handler = {
+    id: uid,
+    callback: updateCb,
+  };
+  let subscriptionItem = channelToSubscription.get(channelString);
+  if (subscriptionItem) {
+    // already subscribed to the channel, use the existing subscription
+    subscriptionItem.handlers.push(handler);
+    return;
+  }
+  subscriptionItem = {
+    uid,
+    resolution,
+    lastDailyBar,
+    handlers: [handler],
+  };
+  channelToSubscription.set(channelString, subscriptionItem);
+  console.log(
+    "[subscribeBars]: Subscribe to streaming. Channel:",
+    channelString
+  );
+
+  await subscribeInstruments({
+    instruments: [
+      {
+        exchangeSegment: Segments[symbolInfo.exchange],
+        exchangeInstrumentID: symbolInfo.exchangeInstrumentID,
+      },
+    ],
+    xtsMessageCode: 1505,
+  });
 }
 
-export function unsubscribeFromStream(subscriberUID) {
-	// find a subscription with id === subscriberUID
-	for (const channelString of channelToSubscription.keys()) {
-		const subscriptionItem = channelToSubscription.get(channelString);
-		const handlerIndex = subscriptionItem.handlers
-			.findIndex(handler => handler.id === subscriberUID);
+export async function unsubscribeBars(subscriberUID) {
+  for (const channelString of channelToSubscription.keys()) {
+    const [exchange, id] = channelString;
+    const subscriptionItem = channelToSubscription.get(channelString);
+    const handlerIndex = subscriptionItem.handlers.findIndex(
+      (handler) => handler.id === subscriberUID
+    );
 
-		if (handlerIndex !== -1) {
-			// remove from handlers
-			subscriptionItem.handlers.splice(handlerIndex, 1);
+    if (handlerIndex !== -1) {
+      // remove from handlers
+      subscriptionItem.handlers.splice(handlerIndex, 1);
 
-			if (subscriptionItem.handlers.length === 0) {
-				// unsubscribe from the channel, if it was the last handler
-				console.log('[unsubscribeBars]: Unsubscribe from streaming. Channel:', channelString);
-				socket.emit('SubRemove', { subs: [channelString] });
-				channelToSubscription.delete(channelString);
-				break;
-			}
-		}
-	}
+      if (subscriptionItem.handlers.length === 0) {
+        // unsubscribe from the channel, if it was the last handler
+        console.log(
+          "[unsubscribeBars]: Unsubscribe from streaming. Channel:",
+          channelString
+        );
+        await unsubscribeInstruments({
+          instruments: [
+            {
+              exchangeSegment: exchange,
+              exchangeInstrumentID: id,
+            },
+          ],
+          xtsMessageCode: 1505,
+        });
+        channelToSubscription.delete(channelString);
+        break;
+      }
+    }
+  }
 }
+
+socket.on("connect", () => {
+  console.log("===Socket connected");
+});
+socket.on("disconnect", (e) => {
+  console.log("===Socket disconnected:", e);
+});
+socket.on("error", (err) => {
+  console.log("====socket error", err);
+});

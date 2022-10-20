@@ -1,4 +1,5 @@
 import { getBars } from "./helpers.js";
+import { subscribeBars } from "./streaming.js";
 
 const supportedResolutions = [
   "1",
@@ -148,5 +149,21 @@ export default {
     } else {
       onHistoryCallback(bars, { noData: true });
     }
+  },
+  subscribeBars: async function (
+    symbolInfo,
+    resolution,
+    onRealtimeCallback,
+    subscribeUID,
+    onResetCacheNeededCallback
+  ) {
+    subscribeBars(
+      symbolInfo,
+      resolution,
+      onRealtimeCallback,
+      subscribeUID,
+      onResetCacheNeededCallback,
+      symbolInfo.token
+    );
   },
 };

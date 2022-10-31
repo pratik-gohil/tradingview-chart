@@ -15,12 +15,14 @@ window.tvWidget = new TradingView.widget({
   datafeed: Datafeed,
   library_path: "../charting_library/",
   disabled_features: [
-    "use_localstorage_for_settings",
+    "create_volume_indicator_by_default",
+    // "use_localstorage_for_settings",
     "header_symbol_search",
     "symbol_search_hot_key",
     "header_compare",
     "header_settings",
+    "header_screenshot",
   ],
-  enabled_features: ["hide_left_toolbar_by_default", "study_templates"],
+  enabled_features: ["hide_left_toolbar_by_default"],
   // preset: "mobile",
 });
